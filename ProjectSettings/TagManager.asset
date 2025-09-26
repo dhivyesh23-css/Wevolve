@@ -3,7 +3,8 @@
 --- !u!78 &1
 TagManager:
   serializedVersion: 3
-  tags: []
+  tags:
+  - Nucleus
   layers:
   - Default
   - TransparentFX
@@ -11,10 +12,10 @@ TagManager:
   - Ground
   - Water
   - UI
-  - SpawnedObjects
-  - 
-  - 
-  - 
+  - Nucleus
+  - Player
+  - PlayerTail
+  - Wall
   - 
   - 
   - 
