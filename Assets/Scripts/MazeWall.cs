@@ -10,7 +10,7 @@ public class MazeWall : MonoBehaviour
     {
         meshRenderer = GetComponent<MeshRenderer>();
         // Start with the wall invisible.
-        meshRenderer.enabled = false;
+        meshRenderer.enabled = true;
     }
 
     public void Reveal()
