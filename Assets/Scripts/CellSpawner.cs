@@ -2,77 +2,64 @@
 using UnityEngine;
 using System.Collections.Generic;
 
-/// <summary>
-/// Procedurally spawns cells in a specified radius around a target (the player), ensuring they do not overlap.
-/// </summary>
 public class CellSpawner : MonoBehaviour
 {
-    [Header("Spawning Configuration")]
     public GameObject cellPrefab;
     public Transform playerTransform;
-    public int numberOfCellsToSpawn = 20;
+    public int numberOfCells = 20;
     public float spawnRadius = 50f;
-    public float minDistanceBetweenCells = 5f;
+    public float minDistanceBetween = 8f;
 
-    [Header("Cell Size Variation")]
-    public Vector2 scaleRange = new Vector2(0.8f, 1.5f);
+    [System.Serializable]
+    public class CellType { public string name; public float scale; public int weight; }
+    public CellType[] cellTypes = new CellType[] {
+        new CellType{ name="Small", scale=1.0f, weight=60 },
+        new CellType{ name="Medium", scale=1.5f, weight=40 }
+    };
 
-    private List<Vector3> spawnedCellPositions = new List<Vector3>();
+    private List<Vector3> spawnedPositions = new List<Vector3>();
+    private List<float> spawnedRadii = new List<float>();
 
-    void Start()
-    {
-        if (playerTransform == null || cellPrefab == null)
-        {
-            Debug.LogError("Player Transform or Cell Prefab is not assigned in the CellSpawner!");
-            return;
-        }
+    void Start() {
+        if (!playerTransform || !cellPrefab) { Debug.LogError("Assign Player and Cell Prefab!"); return; }
         SpawnCells();
     }
 
-    void SpawnCells()
-    {
-        for (int i = 0; i < numberOfCellsToSpawn; i++)
-        {
+    void SpawnCells() {
+        for (int i = 0; i < numberOfCells; i++) {
             int attempts = 0;
-            bool positionFound = false;
-            Vector3 potentialPosition = Vector3.zero;
-
-            while (!positionFound && attempts < 30)
-            {
-                Vector2 randomPointInCircle = Random.insideUnitCircle * spawnRadius;
-                potentialPosition = playerTransform.position + new Vector3(randomPointInCircle.x, randomPointInCircle.y, 0);
-
-                if (!IsOverlapping(potentialPosition))
-                {
-                    positionFound = true;
+            while (attempts < 30) {
+                Vector2 rand = Random.insideUnitCircle * spawnRadius;
+                Vector3 pos = playerTransform.position + new Vector3(rand.x, rand.y, 0);
+                CellType type = GetRandomCellType();
+                float radius = (type.scale / 2f) * minDistanceBetween;
+                if (!IsOverlapping(pos, radius)) {
+                    GameObject cell = Instantiate(cellPrefab, pos, Quaternion.identity);
+                    cell.transform.localScale = Vector3.one * type.scale;
+                    spawnedPositions.Add(pos);
+                    spawnedRadii.Add(radius);
+                    break;
                 }
                 attempts++;
-            }
-
-            if (positionFound)
-            {
-                GameObject newCell = Instantiate(cellPrefab, potentialPosition, Quaternion.identity);
-
-                float randomScaleX = Random.Range(scaleRange.x, scaleRange.y);
-                float randomScaleY = (Random.value > 0.3f) ? Random.Range(scaleRange.x, scaleRange.y) : randomScaleX; 
-                newCell.transform.localScale = new Vector3(randomScaleX, randomScaleY, 1f);
-                
-                // --- FIXED: Removed the unnecessary call to SetClearanceRadius ---
-                
-                spawnedCellPositions.Add(potentialPosition);
             }
         }
     }
 
-    bool IsOverlapping(Vector3 position)
-    {
-        foreach (Vector3 spawnedPos in spawnedCellPositions)
-        {
-            if (Vector3.Distance(position, spawnedPos) < minDistanceBetweenCells)
-            {
-                return true;
-            }
+    bool IsOverlapping(Vector3 pos, float radius) {
+        for (int i=0; i < spawnedPositions.Count; i++) {
+            if (Vector3.Distance(pos, spawnedPositions[i]) < radius + spawnedRadii[i]) return true;
         }
         return false;
+    }
+
+    CellType GetRandomCellType() {
+        int totalWeight = 0;
+        foreach (var type in cellTypes) totalWeight += type.weight;
+        int rand = Random.Range(0, totalWeight);
+        foreach (var type in cellTypes) {
+            if (rand < type.weight) return type;
+            rand -= type.weight;
+        }
+        return cellTypes[0];
     }
 }

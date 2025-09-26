@@ -1,294 +1,227 @@
-//
 // Filename: MazeGenerator.cs
-//
 using UnityEngine;
 using System.Collections.Generic;
+using System.Linq; // Needed for the curviness logic
 
-/// <summary>
-/// Generates a 2D circular maze with a single mesh and a 2D polygon collider for physics.
-/// </summary>
+[ExecuteInEditMode]
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer), typeof(PolygonCollider2D))]
 public class MazeGenerator : MonoBehaviour
 {
+    [Header("Maze Sizing (World Units)")]
+    [Tooltip("The total outer radius of the maze. Should match half your cell's width.")]
+    public float totalRadius = 5f;
+    [Tooltip("The radius of the central goal area. Should match half your nucleus's width.")]
+    public float centerRadius = 0.375f;
+    [Tooltip("Creates a gap between the totalRadius and the outermost maze wall.")]
+    public float outerPadding = 0.5f;
+
     [Header("Maze Structure")]
-    [Tooltip("Number of concentric rings in the maze.")]
-    [Range(2, 50)]
-    public int numberOfRings = 10;
-
-    [Tooltip("Radius of the innermost ring (the central goal area).")]
-    public float nucleusRadius = 1.5f;
-
-    [Tooltip("How much space each subsequent ring adds.")]
-    public float ringWidth = 1.0f;
-
-    [Tooltip("The thickness of the generated maze walls.")]
+    [Range(2, 25)] public int numberOfRings = 5;
+    [Tooltip("Higher values create longer, more circular paths.")]
+    [Range(0f, 1f)] public float curviness = 0.75f;
+    [Tooltip("How many segments to use for each curved wall. Higher is smoother.")]
+    [Range(1, 20)] public int arcResolution = 5;
     public float wallThickness = 0.1f;
+    [Range(1, 10)] public int numberOfEntrances = 1;
+    [Tooltip("Set to 0 for a random seed.")] public int seed = 0;
+    
+    [Header("Visuals")]
+    [Tooltip("The material to apply to each maze wall.")]
+    public Material wallMaterial; // <-- THE SLOT TO ASSIGN YOUR MATERIAL
 
-    [Header("Entrances & Goal")]
-    [Tooltip("Number of entrances on the outermost wall.")]
-    [Range(1, 10)]
-    public int numberOfEntrances = 4;
-
-    [Header("Generation")]
-    [Tooltip("Set to 0 for a random seed.")]
-    public int seed = 0;
-
-    // --- Private members ---
-    private class CircularMazeCell
-    {
-        public int row, col;
-        public bool visited = false;
-        public bool wallClockwise = true;
-        public bool wallOutward = true;
-    }
-
+    // --- Private Variables ---
+    private class CircularMazeCell { public bool visited, wallClockwise = true, wallOutward = true; }
     private CircularMazeCell[,] _grid;
-    private MeshFilter _meshFilter;
-    private PolygonCollider2D _polygonCollider;
+    private int[] _ringCellCounts;
     private System.Random _rng;
+    private float _nucleusRadius;
+    private float _ringWidth;
 
-    void Start()
-    {
-        Generate();
-    }
-
-    public void Generate()
-    {
-        _meshFilter = GetComponent<MeshFilter>();
-        _polygonCollider = GetComponent<PolygonCollider2D>();
-
+    [ContextMenu("Generate Maze")]
+    public void Generate() {
         _rng = (seed == 0) ? new System.Random() : new System.Random(seed);
-        
-        // Clear previous collider paths
-        _polygonCollider.pathCount = 0;
+        GetComponent<PolygonCollider2D>().pathCount = 0;
+        GetComponent<MeshFilter>().mesh = null;
 
         InitializeGrid();
         CarveMazePaths();
         CreateOpenings();
-        BuildMazeMeshAndCollider();
+        BuildMazeObjects();
     }
-    
-    // ---
-    // ### STEP 1: SETUP GRID
-    // ---
-    private void InitializeGrid()
-    {
-        var ringCellCounts = new List<int>();
-        float currentRadius = nucleusRadius;
 
-        for (int i = 0; i < numberOfRings; i++)
-        {
-            float circumference = 2 * Mathf.PI * currentRadius;
-            int cellsInRing = Mathf.RoundToInt(circumference / ringWidth);
-            ringCellCounts.Add(cellsInRing);
-            currentRadius += ringWidth;
-        }
-        
+    private void InitializeGrid() {
+        float effectiveRadius = totalRadius - outerPadding;
+        _nucleusRadius = centerRadius;
+        _ringWidth = (effectiveRadius - centerRadius) / numberOfRings;
+
+        _ringCellCounts = new int[numberOfRings];
+        float currentRadius = _nucleusRadius + _ringWidth / 2f;
         int maxCols = 0;
-        foreach(var count in ringCellCounts) if (count > maxCols) maxCols = count;
+
+        for (int i = 0; i < numberOfRings; i++) {
+            float circumference = 2 * Mathf.PI * currentRadius;
+            _ringCellCounts[i] = Mathf.Max(4, Mathf.RoundToInt(circumference / _ringWidth));
+            if (_ringCellCounts[i] > maxCols) maxCols = _ringCellCounts[i];
+            currentRadius += _ringWidth;
+        }
 
         _grid = new CircularMazeCell[numberOfRings, maxCols];
-
-        for (int i = 0; i < numberOfRings; i++)
-        {
-            for (int j = 0; j < ringCellCounts[i]; j++)
-            {
-                _grid[i, j] = new CircularMazeCell { row = i, col = j };
+        for (int i = 0; i < numberOfRings; i++) {
+            for (int j = 0; j < _ringCellCounts[i]; j++) {
+                _grid[i, j] = new CircularMazeCell();
             }
         }
     }
     
-    // ---
-    // ### STEP 2: CARVE MAZE (DFS)
-    // ---
-    private void CarveMazePaths()
-    {
-        var stack = new Stack<CircularMazeCell>();
-        var startCell = _grid[0, _rng.Next(0, GetCellCountInRing(0))];
-        startCell.visited = true;
-        stack.Push(startCell);
+    private void BuildMazeObjects() {
+        Transform wallContainer = transform.Find("Walls");
+        if (wallContainer != null) DestroyImmediate(wallContainer.gameObject);
+        wallContainer = new GameObject("Walls").transform;
+        wallContainer.parent = transform;
+        wallContainer.localPosition = Vector3.zero;
 
-        while (stack.Count > 0)
-        {
-            var currentCell = stack.Pop();
-            var neighbors = GetUnvisitedNeighbors(currentCell);
-
-            if (neighbors.Count > 0)
-            {
-                stack.Push(currentCell);
-                var randomNeighbor = neighbors[_rng.Next(0, neighbors.Count)];
-                RemoveWall(currentCell, randomNeighbor);
-                randomNeighbor.visited = true;
-                stack.Push(randomNeighbor);
-            }
+        int cellsInFirstRing = GetCellCountInRing(0);
+        int nucleusOpeningCell = _rng.Next(0, cellsInFirstRing);
+        for (int c = 0; c < cellsInFirstRing; c++) {
+            if (c == nucleusOpeningCell) continue;
+            float thetaStart = (c / (float)cellsInFirstRing) * 2 * Mathf.PI;
+            float thetaEnd = ((c + 1) / (float)cellsInFirstRing) * 2 * Mathf.PI;
+            CreateWallObject(_nucleusRadius, thetaStart, thetaEnd, true, $"NucleusWall_{c}", wallContainer);
         }
-    }
 
-    private List<CircularMazeCell> GetUnvisitedNeighbors(CircularMazeCell cell)
-    {
-        var neighbors = new List<CircularMazeCell>();
-        int r = cell.row;
-        int c = cell.col;
-        int cellsInCurrentRing = GetCellCountInRing(r);
-
-        // Clockwise
-        int clockwiseCol = (c + 1) % cellsInCurrentRing;
-        if (!_grid[r, clockwiseCol].visited) neighbors.Add(_grid[r, clockwiseCol]);
-        
-        // Counter-Clockwise
-        int counterClockwiseCol = (c - 1 + cellsInCurrentRing) % cellsInCurrentRing;
-        if (!_grid[r, counterClockwiseCol].visited) neighbors.Add(_grid[r, counterClockwiseCol]);
-
-        // Outward
-        if (r < numberOfRings - 1)
-        {
-            int cellsInOuterRing = GetCellCountInRing(r + 1);
-            int outerCol = Mathf.RoundToInt((float)c / cellsInCurrentRing * cellsInOuterRing);
-            outerCol = Mathf.Clamp(outerCol, 0, cellsInOuterRing - 1);
-            if (_grid[r + 1, outerCol] != null && !_grid[r + 1, outerCol].visited)
-            {
-                neighbors.Add(_grid[r + 1, outerCol]);
-            }
-        }
-        
-        // Inward
-        if (r > 0)
-        {
-            int cellsInInnerRing = GetCellCountInRing(r - 1);
-            int innerCol = Mathf.RoundToInt((float)c / cellsInCurrentRing * cellsInInnerRing);
-            innerCol = Mathf.Clamp(innerCol, 0, cellsInInnerRing - 1);
-             if (_grid[r - 1, innerCol] != null && !_grid[r - 1, innerCol].visited)
-            {
-                neighbors.Add(_grid[r - 1, innerCol]);
-            }
-        }
-        return neighbors;
-    }
-    
-    private void RemoveWall(CircularMazeCell from, CircularMazeCell to)
-    {
-        if (to.row > from.row) from.wallOutward = false;
-        else if (to.row < from.row) to.wallOutward = false;
-        else if ((to.col > from.col || (to.col == 0 && from.col == GetCellCountInRing(from.row) - 1))) from.wallClockwise = false;
-        else to.wallClockwise = false;
-    }
-
-    // ---
-    // ### STEP 3: CREATE ENTRANCES
-    // ---
-    private void CreateOpenings()
-    {
-        for (int i = 0; i < numberOfEntrances; i++)
-        {
-            int entranceRing = numberOfRings - 1;
-            int entranceCol = _rng.Next(0, GetCellCountInRing(entranceRing));
-            if (_grid[entranceRing, entranceCol] != null)
-            {
-                _grid[entranceRing, entranceCol].wallOutward = false;
-            }
-        }
-    }
-
-    // ---
-    // ### STEP 4: BUILD MESH AND 2D COLLIDER
-    // ---
-    private void BuildMazeMeshAndCollider()
-    {
-        var vertices = new List<Vector3>();
-        var triangles = new List<int>();
-        var colliderPaths = new List<Vector2[]>();
-
-        for (int r = 0; r < numberOfRings; r++)
-        {
+        for (int r = 0; r < numberOfRings; r++) {
             int cellsInRing = GetCellCountInRing(r);
-            if (cellsInRing == 0) continue;
-
-            float innerRadius = nucleusRadius + r * ringWidth;
-            float outerRadius = innerRadius + ringWidth;
-            float angleStep = 360.0f / cellsInRing;
-
-            for (int c = 0; c < cellsInRing; c++)
-            {
-                var cell = _grid[r, c];
-                float startAngle = c * angleStep;
-
-                if (cell.wallOutward)
-                {
-                    int segments = 5;
-                    for (int i = 0; i < segments; i++)
-                    {
-                        float ang1 = startAngle + (i * (angleStep / segments));
-                        float ang2 = startAngle + ((i + 1) * (angleStep / segments));
-                        var v = CreateArcQuad(outerRadius, wallThickness, ang1, ang2);
-                        AddGeometry(vertices, triangles, colliderPaths, v);
-                    }
-                }
-
-                if (cell.wallClockwise)
-                {
-                    float angle = (c + 1) * angleStep;
-                    var v = CreateRadialQuad(innerRadius, outerRadius, angle, wallThickness);
-                    AddGeometry(vertices, triangles, colliderPaths, v);
-                }
+            for (int c = 0; c < cellsInRing; c++) {
+                if (_grid[r, c] == null) continue;
+                float innerRadius = _nucleusRadius + r * _ringWidth;
+                float outerRadius = innerRadius + _ringWidth;
+                float thetaStart = (c / (float)cellsInRing) * 2 * Mathf.PI;
+                float thetaEnd = ((c + 1) / (float)cellsInRing) * 2 * Mathf.PI;
+                if (_grid[r, c].wallClockwise) CreateWallObject(innerRadius, outerRadius, thetaEnd, false, $"Wall_R_{r}_{c}", wallContainer);
+                if (_grid[r, c].wallOutward) CreateWallObject(outerRadius, thetaStart, thetaEnd, true, $"Wall_A_{r}_{c}", wallContainer);
             }
         }
+    }
 
-        var mesh = new Mesh();
-        mesh.vertices = vertices.ToArray();
-        mesh.triangles = triangles.ToArray();
-        mesh.RecalculateNormals();
-        _meshFilter.mesh = mesh;
+    private void CreateWallObject(float val1, float val2, float val3, bool isArc, string name, Transform parent) {
+        GameObject wallGO = new GameObject(name);
+        wallGO.transform.parent = parent;
+        wallGO.layer = LayerMask.NameToLayer("Ground");
         
-        _polygonCollider.pathCount = colliderPaths.Count;
-        for(int i=0; i < colliderPaths.Count; i++)
-        {
-            _polygonCollider.SetPath(i, colliderPaths[i]);
+        var mf = wallGO.AddComponent<MeshFilter>();
+        var mr = wallGO.AddComponent<MeshRenderer>();
+        var pc = wallGO.AddComponent<PolygonCollider2D>();
+        wallGO.AddComponent<MazeWall>();
+
+        mr.material = wallMaterial;
+
+        List<Vector3> vertices = new List<Vector3>();
+        List<int> triangles = new List<int>();
+        Vector2[] colliderPath;
+
+        if (isArc) {
+            float radius = val1, thetaStart = val2, thetaEnd = val3;
+            float r_inner = radius - wallThickness / 2f;
+            float r_outer = radius + wallThickness / 2f;
+
+            for (int i = 0; i < arcResolution; i++) {
+                float t1 = (float)i / arcResolution;
+                float t2 = (float)(i + 1) / arcResolution;
+                float angle1 = Mathf.Lerp(thetaStart, thetaEnd, t1);
+                float angle2 = Mathf.Lerp(thetaStart, thetaEnd, t2);
+                int vertIndex = i * 4;
+                vertices.Add(PolarToCartesian(r_inner, angle1));
+                vertices.Add(PolarToCartesian(r_outer, angle1));
+                vertices.Add(PolarToCartesian(r_outer, angle2));
+                vertices.Add(PolarToCartesian(r_inner, angle2));
+                triangles.Add(vertIndex); triangles.Add(vertIndex + 1); triangles.Add(vertIndex + 2);
+                triangles.Add(vertIndex); triangles.Add(vertIndex + 2); triangles.Add(vertIndex + 3);
+            }
+            
+            colliderPath = new Vector2[arcResolution + 1];
+            for (int i = 0; i <= arcResolution; i++) {
+                colliderPath[i] = PolarToCartesian(radius, Mathf.Lerp(thetaStart, thetaEnd, (float)i/arcResolution));
+            }
+        } else {
+            float innerRadius = val1, outerRadius = val2, theta = val3;
+            float halfThick_inner = Mathf.Asin((wallThickness / 2f) / innerRadius);
+            float halfThick_outer = Mathf.Asin((wallThickness / 2f) / outerRadius);
+            vertices.Add(PolarToCartesian(innerRadius, theta - halfThick_inner));
+            vertices.Add(PolarToCartesian(innerRadius, theta + halfThick_inner));
+            vertices.Add(PolarToCartesian(outerRadius, theta + halfThick_outer));
+            vertices.Add(PolarToCartesian(outerRadius, theta - halfThick_outer));
+            triangles.AddRange(new int[] { 0, 1, 2, 0, 2, 3 });
+            colliderPath = new Vector2[] { PolarToCartesian(innerRadius, theta), PolarToCartesian(outerRadius, theta) };
+        }
+
+        Mesh mesh = new Mesh { vertices = vertices.ToArray(), triangles = triangles.ToArray() };
+        mesh.RecalculateNormals();
+        mf.mesh = mesh;
+        pc.SetPath(0, colliderPath);
+    }
+
+    #region Pathfinding Logic
+    private List<(int nR, int nC, char dir)> GetUnvisitedNeighbors(int r, int c) {
+        var circularNeighbors = new List<(int, int, char)>();
+        var radialNeighbors = new List<(int, int, char)>();
+        int cellsInRing = GetCellCountInRing(r);
+        int cwC = (c + 1) % cellsInRing;
+        if (!_grid[r, cwC].visited) circularNeighbors.Add((r, cwC, 'C'));
+        int ccwC = (c - 1 + cellsInRing) % cellsInRing;
+        if (!_grid[r, ccwC].visited) circularNeighbors.Add((r, ccwC, 'A'));
+        if (r < numberOfRings - 1) {
+            int cellsInOuterRing = GetCellCountInRing(r + 1);
+            float proportion = (c + 0.5f) / cellsInRing;
+            int outwardC = Mathf.FloorToInt(proportion * cellsInOuterRing);
+            if (!_grid[r + 1, outwardC].visited) radialNeighbors.Add((r + 1, outwardC, 'O'));
+        }
+        if (r > 0) {
+            int cellsInInnerRing = GetCellCountInRing(r - 1);
+            float proportion = (c + 0.5f) / cellsInRing;
+            int inwardC = Mathf.FloorToInt(proportion * cellsInInnerRing);
+            if (!_grid[r - 1, inwardC].visited) radialNeighbors.Add((r - 1, inwardC, 'I'));
+        }
+
+        if (_rng.NextDouble() < curviness && circularNeighbors.Any()) {
+            return circularNeighbors;
+        }
+
+        return circularNeighbors.Concat(radialNeighbors).ToList();
+    }
+
+    private void CarveMazePaths() {
+        var stack = new Stack<(int r, int c)>();
+        int startR = 0;
+        int startC = _rng.Next(0, GetCellCountInRing(startR));
+        _grid[startR, startC].visited = true;
+        stack.Push((startR, startC));
+        while (stack.Count > 0) {
+            (int r, int c) = stack.Peek();
+            var neighbors = GetUnvisitedNeighbors(r, c);
+            if (neighbors.Count > 0) {
+                var (nR, nC, dir) = neighbors[_rng.Next(0, neighbors.Count)];
+                if (dir == 'O') _grid[r, c].wallOutward = false;
+                else if (dir == 'I') _grid[nR, nC].wallOutward = false;
+                else if (dir == 'C') _grid[r, c].wallClockwise = false;
+                else _grid[nR, nC].wallClockwise = false;
+                _grid[nR, nC].visited = true;
+                stack.Push((nR, nC));
+            } else { stack.Pop(); }
         }
     }
-
-    // ---
-    // ### HELPER METHODS
-    // ---
-    private int GetCellCountInRing(int ringIndex)
-    {
-        int count = 0;
-        if (ringIndex < 0 || ringIndex >= _grid.GetLength(0)) return 0;
-        for (int c = 0; c < _grid.GetLength(1); c++)
-        {
-            if (_grid[ringIndex, c] != null) count++;
-            else break;
+    
+    private void CreateOpenings() {
+        int outerRing = numberOfRings - 1;
+        int cellsInOuterRing = GetCellCountInRing(outerRing);
+        for (int i = 0; i < numberOfEntrances; i++) {
+            int c = _rng.Next(0, cellsInOuterRing);
+            if (_grid[outerRing, c] != null) _grid[outerRing, c].wallOutward = false;
         }
-        return count;
     }
-
-    private Vector3[] CreateArcQuad(float radius, float thickness, float a1, float a2) {
-        return new Vector3[] {
-            PointOnCircle(radius - thickness/2, a1), PointOnCircle(radius + thickness/2, a1),
-            PointOnCircle(radius - thickness/2, a2), PointOnCircle(radius + thickness/2, a2)
-        };
-    }
-
-    private Vector3[] CreateRadialQuad(float r1, float r2, float angle, float thickness) {
-        Vector3 c1 = PointOnCircle(r1, angle);
-        Vector3 c2 = PointOnCircle(r2, angle);
-        Vector3 offset = new Vector3(Mathf.Sin(angle * Mathf.Deg2Rad), 0, -Mathf.Cos(angle * Mathf.Deg2Rad)) * thickness;
-        return new Vector3[] { c1 - offset/2, c1 + offset/2, c2 - offset/2, c2 + offset/2 };
-    }
-
-    private Vector3 PointOnCircle(float radius, float angleDeg) {
-        // Using X and Y for 2D plane, Z will be 0
-        return new Vector3(
-            radius * Mathf.Cos(angleDeg * Mathf.Deg2Rad), 
-            radius * Mathf.Sin(angleDeg * Mathf.Deg2Rad), 
-            0
-        );
-    }
-
-    private void AddGeometry(List<Vector3> v, List<int> t, List<Vector2[]> p, Vector3[] q) {
-        int index = v.Count;
-        v.AddRange(q);
-        t.AddRange(new int[] { index, index + 2, index + 1, index + 2, index + 3, index + 1 });
-        // The Z component is ignored when converting Vector3 to Vector2 for the collider.
-        p.Add(new Vector2[] { q[0], q[2], q[3], q[1] });
-    }
+    #endregion
+    
+    #region Helpers
+    private int GetCellCountInRing(int r) => _ringCellCounts[r];
+    private Vector2 PolarToCartesian(float radius, float theta) => new Vector2(radius * Mathf.Cos(theta), radius * Mathf.Sin(theta));
+    #endregion
 }
