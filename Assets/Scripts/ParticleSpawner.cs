@@ -18,9 +18,12 @@ public class ParticleSpawner : MonoBehaviour
     public float minSizeMultiplier = 1.0f;
     [Tooltip("Set the maximum size multiplier. e.g. 3.0 = 300%.")]
     public float maxSizeMultiplier = 3.0f;
-    
-    // Note: particleLifetime is no longer used for despawning
-    // but can be kept for other purposes if needed.
+    [Tooltip("Chance (0-1) for a particle to follow the player.")]
+    public float followChance = 0.1f;
+    [Tooltip("Lifetime for particles that are not following the player.")]
+    public float nonFollowingLifetime = 5.0f;
+    [Tooltip("Lifetime for particles that are following the player.")]
+    public float followingLifetime = 10.0f;
 
     private float timer;
     private Vector3 originalParticleScale;
@@ -70,7 +73,7 @@ public class ParticleSpawner : MonoBehaviour
         Vector3 spawnPosition;
         int attempts = 0;
         const int maxAttempts = 50;
-        
+
         // Find a spawn position that is not on screen
         do
         {
@@ -89,6 +92,15 @@ public class ParticleSpawner : MonoBehaviour
         // Randomize the size of the spawned object
         float randomMultiplier = Random.Range(minSizeMultiplier, maxSizeMultiplier);
         spawnedObject.transform.localScale = originalParticleScale * randomMultiplier;
+
+        // Get the FollowPlayerParticle script and initialize it
+        FollowPlayerParticle particleScript = spawnedObject.GetComponent<FollowPlayerParticle>();
+        if (particleScript != null)
+        {
+            bool shouldFollow = Random.value < followChance;
+            float lifetime = shouldFollow ? followingLifetime : nonFollowingLifetime;
+            particleScript.Initialize(targetTransform, shouldFollow, lifetime);
+        }
     }
     
     // Helper method to check if a position is visible to the camera

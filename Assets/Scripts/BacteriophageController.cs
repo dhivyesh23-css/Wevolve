@@ -14,15 +14,28 @@ public class BacteriophageController : MonoBehaviour
     // === COMPONENTS & REFERENCES ===
     public Transform[] upperLegs;
     public Transform[] lowerLegs;
-    public TailController tailController;
+    // NOTE: TailController class methods (like IsRetracting) are assumed to exist.
+    public TailController tailController; 
     private Rigidbody2D rb;
     private Animator anim;
+    
+    // State flag to track tail retraction for the F key toggle
+    private bool isTailRetracting = false; 
 
     [Header("Underwater Walking")]
     public float moveSpeed = 3f;
     public float flapForce = 12f;
     public float airRotationSpeed = 300f;
     public float walkGravity = 0.5f;
+
+    [Header("Antibody Interaction")]
+    [Tooltip("The Tag used for Antibody GameObjects. MUST be defined in Unity's Tag Manager.")]
+    public string antibodyTag = "Antibody";
+    [Tooltip("The speed will be multiplied by this factor when touching an Antibody.")]
+    public float antibodySlowFactor = 0.3f; // e.g., 30% of original speed
+    private float originalMoveSpeed;
+    private int antibodyContactCount = 0;
+    // Removed unused variable 'isSlowedByAntibody'
 
     [Header("Surface Walking")]
     [Tooltip("How strongly the phage sticks to curved surfaces.")]
@@ -46,6 +59,9 @@ public class BacteriophageController : MonoBehaviour
         SwitchState(MovementState.Walking);
         if (groundCheck == null) { Debug.LogError("Ground Check object is not assigned."); }
         if (tailController == null) { Debug.LogError("Tail Controller is not assigned in the Inspector!"); }
+        
+        // Store the original speed for recovery after slowdown
+        originalMoveSpeed = moveSpeed;
     }
 
     void Update()
@@ -57,8 +73,20 @@ public class BacteriophageController : MonoBehaviour
 
         if (currentState == MovementState.Penetrating)
         {
-            if (Input.GetKey(KeyCode.F)) { tailController.StartRetraction(); }
-            else if (Input.GetKeyUp(KeyCode.F)) { tailController.StopRetraction(); }
+            // Tail Retraction Toggle
+            if (Input.GetKeyDown(KeyCode.F)) 
+            {
+                if (isTailRetracting) 
+                { 
+                    tailController.StopRetraction();
+                    isTailRetracting = false;
+                } 
+                else 
+                {
+                    tailController.StartRetraction();
+                    isTailRetracting = true;
+                }
+            }
         }
 
         HandleJumpInput();
@@ -77,6 +105,43 @@ public class BacteriophageController : MonoBehaviour
         CheckSurface();
         HandleMovement();
     }
+
+    // --- Collision handling for Antibody Slowdown (using Trigger) ---
+
+    void OnTriggerEnter2D(Collider2D other)
+    {
+        // Check if the other object's tag matches the antibody tag.
+        // We use 'tag == antibodyTag' for robustness against the Tag being undefined in the Editor.
+        if (other.gameObject.tag == antibodyTag)
+        {
+            antibodyContactCount++;
+            
+            // Only apply slow effect on the first contact
+            if (antibodyContactCount == 1)
+            {
+                // Reduce the current move speed
+                moveSpeed = originalMoveSpeed * antibodySlowFactor; 
+            }
+        }
+    }
+
+    void OnTriggerExit2D(Collider2D other)
+    {
+        // Check if the other object's tag matches the antibody tag.
+        if (other.gameObject.tag == antibodyTag)
+        {
+            antibodyContactCount--;
+            
+            // Only restore speed if all antibody contacts have ended
+            if (antibodyContactCount <= 0)
+            {
+                antibodyContactCount = 0; // Safety clamp
+                // Restore the original move speed
+                moveSpeed = originalMoveSpeed;
+            }
+        }
+    }
+    // --- END Collision handling ---
 
     void CheckSurface()
     {
@@ -104,7 +169,8 @@ public class BacteriophageController : MonoBehaviour
 
             if (currentState == MovementState.Walking)
             {
-                rb.gravityScale = walkGravity;
+                // This will use the current 'moveSpeed' which is either original or slowed
+                rb.gravityScale = walkGravity; 
             }
         }
     }
@@ -133,6 +199,7 @@ public class BacteriophageController : MonoBehaviour
     {
         if (currentState == MovementState.Penetrating)
         {
+            // Assuming TailController.IsRetracting() exists for rotation check
             if (!tailController.IsRetracting())
             {
                 float tailRotationInput = Input.GetAxisRaw("Horizontal");
@@ -147,7 +214,8 @@ public class BacteriophageController : MonoBehaviour
         {
             if (isStickingToSurface)
             {
-                rb.linearVelocity = transform.right * horizontalInput * moveSpeed;
+                // Uses the current, potentially slowed, moveSpeed
+                rb.linearVelocity = transform.right * horizontalInput * moveSpeed; 
             }
             else
             {
@@ -178,6 +246,7 @@ public class BacteriophageController : MonoBehaviour
 
         currentState = newState;
         anim.enabled = (currentState == MovementState.Walking);
+        
         if (currentState == MovementState.Walking)
         {
             rb.bodyType = RigidbodyType2D.Dynamic;
@@ -186,13 +255,14 @@ public class BacteriophageController : MonoBehaviour
             rb.angularDamping = 1.0f;
             rb.angularVelocity = 0f;
         }
-        else if (currentState == MovementState.Penetrating)
+        else if (newState == MovementState.Penetrating)
         {
             rb.linearVelocity = Vector2.zero;
             rb.angularVelocity = 0f;
             rb.bodyType = RigidbodyType2D.Kinematic;
             anim.Play("Idle");
             tailController.StartPenetration();
+            isTailRetracting = false; // Reset the toggle state
         }
     }
 
